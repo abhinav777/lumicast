@@ -1,0 +1,13 @@
+# Build artifacts
+Lumicast.app/
+ledprobe
+streamtest
+streamtest_ada
+*.o
+*.dSYM/
+
+# macOS
+.DS_Store
+
+# Debug logs
+*.log
