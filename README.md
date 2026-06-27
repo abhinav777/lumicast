@@ -7,6 +7,8 @@ reads your screen and writes colors to the strip.
 > **Not affiliated with SkyDimo or any vendor.** "SkyDimo" and other names are trademarks of their
 > respective owners.
 
+![Effects mode showing rainbow preview](docs/screenshot-effects.png) ![Solid mode showing blue](docs/screenshot-solid.png) ![Mirror mode](docs/screenshot-mirror.png)
+
 ## Why
 
 The LED kit this was built for ships with a closed‑source app that phones home (activation, update

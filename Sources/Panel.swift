@@ -29,6 +29,7 @@ final class PanelModel: ObservableObject {
     @Published var loginEnabled: Bool = false
     @Published var preview: [UInt8] = []
     var leds: [LedPt] = []
+    private var lastMode = "solid"
     weak var app: AppDelegate?
     private var timer: Timer?
 
@@ -57,9 +58,11 @@ final class PanelModel: ObservableObject {
     func stop() { timer?.invalidate(); timer = nil }
 
     func setMode(_ m: String) {
+        if m != "off" { lastMode = m }
         mode = m; Settings.shared.mode = m
         if m == "mirror" { app?.ensureCapture(); captureGranted = CGPreflightScreenCaptureAccess() }
     }
+    func togglePower() { mode == "off" ? setMode(lastMode) : setMode("off") }
     func setEffect(_ i: Int) { fxIndex = i; mode = "fx"; Settings.shared.fxIndex = i; Settings.shared.mode = "fx" }
     func setSpeed(_ s: Double) { fxSpeed = s; Settings.shared.fxSpeed = s }
     func setPreset(_ p: (String, Int, Int, Int)) {
@@ -83,15 +86,18 @@ final class PanelModel: ObservableObject {
 
 struct ControlPanel: View {
     @ObservedObject var m: PanelModel
-    private let tabs: [(String, String)] = [("Off", "off"), ("Solid", "solid"), ("Effects", "fx"), ("Mirror", "mirror")]
+    @State private var showAdvanced = false
+    private let tabs: [(String, String)] = [("Solid", "solid"), ("Effects", "fx"), ("Mirror", "mirror")]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
             LedPreviewView(leds: m.leds, colors: m.preview).frame(height: 134)
             modeTabs
-            context
-            slider("Brightness", m.brightness, 0.05...1.0, "\(Int(m.brightness * 100))%") { m.setBrightness($0) }
+            if m.mode != "off" {
+                context
+                slider("Brightness", m.brightness, 0.05...1.0, "\(Int(m.brightness * 100))%") { m.setBrightness($0) }
+            }
             Divider()
             footer
         }
@@ -107,10 +113,17 @@ struct ControlPanel: View {
             Text("Lumicast").font(.system(size: 13, weight: .medium))
             Spacer()
             Text(status).font(.system(size: 11)).foregroundStyle(.secondary)
+            Button { m.togglePower() } label: {
+                Image(systemName: m.mode == "off" ? "power" : "power")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(m.mode == "off" ? Color.secondary : Color.accentColor)
+            }
+            .buttonStyle(.plain)
+            .help(m.mode == "off" ? "Turn on" : "Turn off")
         }
     }
     private var status: String {
-        if !m.portOpen { return "controller not found" }
+        if !m.portOpen { return "no controller" }
         switch m.mode {
         case "solid": return "Solid · \(Int(m.r)),\(Int(m.g)),\(Int(m.b))"
         case "fx": return EFFECTS[min(m.fxIndex, EFFECTS.count - 1)]
@@ -169,7 +182,7 @@ struct ControlPanel: View {
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
         default:
-            Text("Lights off. Pick a mode above.").font(.system(size: 11)).foregroundStyle(.secondary)
+            EmptyView()
         }
     }
 
@@ -208,16 +221,20 @@ struct ControlPanel: View {
 
     private var footer: some View {
         VStack(spacing: 8) {
-            HStack {
-                Text("Color order").font(.system(size: 12)).foregroundStyle(.secondary)
-                Spacer()
-                Picker("", selection: Binding(get: { m.grb }, set: { m.setOrder($0) })) {
-                    Text("GRB").tag(true); Text("RGB").tag(false)
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 108)
-            }
             Toggle(isOn: Binding(get: { m.loginEnabled }, set: { _ in m.toggleLogin() })) {
                 Text("Launch at login").font(.system(size: 12)).foregroundStyle(.secondary)
             }.toggleStyle(.switch).controlSize(.mini)
+            DisclosureGroup(isExpanded: $showAdvanced) {
+                HStack {
+                    Text("Color order").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Spacer()
+                    Picker("", selection: Binding(get: { m.grb }, set: { m.setOrder($0) })) {
+                        Text("GRB").tag(true); Text("RGB").tag(false)
+                    }.pickerStyle(.segmented).labelsHidden().frame(width: 108)
+                }.padding(.top, 6)
+            } label: {
+                Text("Advanced").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
             HStack {
                 Spacer()
                 Button("Quit Lumicast") { m.quit() }.font(.system(size: 12))
