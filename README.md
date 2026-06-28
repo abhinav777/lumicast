@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="Lumicast icon" width="120" align="right">
+
 # Lumicast
 
 A tiny, native macOS menu-bar app that drives a USB‑serial LED backlight behind your monitor —

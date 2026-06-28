@@ -12,6 +12,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 echo "==> copying bundle resources"
 cp Info.plist "$APP/Contents/Info.plist"
+cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 echo "==> compiling (swiftc)"
 swiftc -O Sources/main.swift Sources/Panel.swift -o "$BIN" \

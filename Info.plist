@@ -10,6 +10,8 @@
     <string>com.abhinav.lumicast</string>
     <key>CFBundleExecutable</key>
     <string>Lumicast</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
