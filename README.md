@@ -13,7 +13,7 @@ reads your screen and writes colors to the strip.
 
 The LED kit this was built for ships with a closed‑source app that phones home (activation, update
 checks, ad fetches, usage logs) and shows ads. Lumicast does **none** of that — it has zero network
-code. You get your lights back, privately, in ~700 lines of Swift you can read.
+code. You get your lights back, privately, in ~800 lines of Swift you can read.
 
 ## Features
 

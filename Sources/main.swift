@@ -3,9 +3,10 @@
 // No network, no telemetry, no ads — it only reads the screen and writes colors to the strip.
 //
 // Protocol (reverse-engineered + confirmed live):
-//   CH340 serial @ 115200 8N1, bare stream of 96 x 3 bytes, byte order GRB.
+//   CH340 serial @ 115200 8N1. Each frame = "Ada" + 0x00 + LED count (16-bit big-endian)
+//   followed by N x 3 color bytes; default byte order RGB (toggleable to GRB). See HDR below.
 //
-// Output is driven by a STEADY 30fps timer (not the capture callback) so the strip always
+// Output is driven by a STEADY 15fps timer (not the capture callback) so the strip always
 // stays lit — the controller blanks itself if it stops receiving data for ~1s.
 
 import AppKit
@@ -75,7 +76,7 @@ final class Settings {
     private let lock = NSLock()
     private let d = UserDefaults.standard
 
-    private var _mode: String          // "off" | "solid" | "mirror"
+    private var _mode: String          // "off" | "solid" | "fx" | "mirror"
     private var _brightness: Double
     private var _grb: Bool
     private var _displayIndex: Int
@@ -359,46 +360,14 @@ final class Engine: NSObject, SCStreamOutput, SCStreamDelegate {
 }
 
 // =====================================================================
-// MARK: - Live preview view (drawn inside a menu item)
+// MARK: - App (menu-bar agent hosting the SwiftUI control panel)
 // =====================================================================
-final class PreviewView: NSView {
-    weak var engine: Engine?
-    override var isFlipped: Bool { true }
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor(white: 0.10, alpha: 1).setFill(); bounds.fill()
-        let frame = bounds.insetBy(dx: 14, dy: 12)
-        NSColor(white: 0.16, alpha: 1).setFill()
-        NSBezierPath(roundedRect: frame.insetBy(dx: 8, dy: 8), xRadius: 6, yRadius: 6).fill()
-        guard let eng = engine else { return }
-        let leds = eng.leds
-        let rgb = eng.snapshotPreview()
-        guard rgb.count >= leds.count * 3 else { return }
-        let dot: CGFloat = 7
-        for (i, p) in leds.enumerated() {
-            let u = GRID_W > 1 ? p.x / Double(GRID_W - 1) : 0
-            let v = GRID_H > 1 ? p.y / Double(GRID_H - 1) : 0
-            let cx = frame.minX + CGFloat(u) * frame.width
-            let cy = frame.minY + CGFloat(v) * frame.height
-            NSColor(srgbRed: CGFloat(rgb[i*3])/255.0, green: CGFloat(rgb[i*3+1])/255.0,
-                    blue: CGFloat(rgb[i*3+2])/255.0, alpha: 1).setFill()
-            NSBezierPath(roundedRect: NSRect(x: cx - dot/2, y: cy - dot/2, width: dot, height: dot),
-                         xRadius: 1.5, yRadius: 1.5).fill()
-        }
-    }
-}
-
-// =====================================================================
-// MARK: - App (reliable NSMenu — actions fire natively in a menu-bar agent)
-// =====================================================================
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var statusItem: NSStatusItem!
     var serial: Serial!
     var engine: Engine!
     var stream: SCStream?
     var displays: [SCDisplay] = []
-    let menu = NSMenu()
-    var previewView: PreviewView!
-    var previewTimer: Timer?
     let model = PanelModel()
     var panel: PanelWindow?
     private var monitor: Any?
@@ -490,127 +459,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         panel?.orderOut(nil)
     }
 
-    // ---- menu lifecycle (legacy, unused now) ----
-    func menuNeedsUpdate(_ menu: NSMenu) { rebuildMenu() }
-    func menuWillOpen(_ menu: NSMenu) {
-        let t = Timer(timeInterval: 1.0/20.0, repeats: true) { [weak self] _ in self?.previewView.needsDisplay = true }
-        RunLoop.main.add(t, forMode: .common); previewTimer = t
-    }
-    func menuDidClose(_ menu: NSMenu) { previewTimer?.invalidate(); previewTimer = nil }
-
-    func rebuildMenu() {
-        let mode = Settings.shared.mode
-        let (r, g, b) = Settings.shared.solidColor
-        let grb = Settings.shared.grb
-        menu.removeAllItems()
-
-        let pItem = NSMenuItem(); pItem.view = previewView; menu.addItem(pItem)
-
-        let stateText = engine.serial.isOpen
-            ? "\(mode) · RGB(\(r),\(g),\(b)) · \(grb ? "GRB" : "RGB") · \(Int(Settings.shared.brightness*100))%"
-            : "⚠︎ controller not found — is it plugged in?"
-        let state = NSMenuItem(title: stateText, action: nil, keyEquivalent: ""); state.isEnabled = false
-        menu.addItem(state)
-        menu.addItem(.separator())
-
-        for (label, val) in [("Off", "off"), ("Solid color", "solid"), ("Mirror screen", "mirror")] {
-            let it = NSMenuItem(title: label, action: #selector(setMode(_:)), keyEquivalent: "")
-            it.target = self; it.representedObject = val; it.state = (mode == val) ? .on : .off
-            menu.addItem(it)
-        }
-        if mode == "mirror" && !CGPreflightScreenCaptureAccess() {
-            let en = NSMenuItem(title: "    Enable Screen Recording…", action: #selector(enableScreen), keyEquivalent: "")
-            en.target = self; menu.addItem(en)
-        }
-        menu.addItem(.separator())
-
-        let fxItem = NSMenuItem(title: "Effects", action: nil, keyEquivalent: "")
-        let fxSub = NSMenu()
-        for (i, name) in EFFECTS.enumerated() {
-            let it = NSMenuItem(title: name, action: #selector(setEffect(_:)), keyEquivalent: "")
-            it.target = self; it.tag = i
-            it.state = (mode == "fx" && Settings.shared.fxIndex == i) ? .on : .off
-            fxSub.addItem(it)
-        }
-        fxItem.submenu = fxSub; menu.addItem(fxItem)
-
-        let spItem = NSMenuItem(title: "Effect speed", action: nil, keyEquivalent: "")
-        let spSub = NSMenu()
-        for (name, val) in [("Slow", 0.25), ("Medium", 0.5), ("Fast", 1.0)] {
-            let it = NSMenuItem(title: name, action: #selector(setSpeed(_:)), keyEquivalent: "")
-            it.target = self; it.representedObject = val
-            it.state = (abs(Settings.shared.fxSpeed - val) < 0.01) ? .on : .off
-            spSub.addItem(it)
-        }
-        spItem.submenu = spSub; menu.addItem(spItem)
-
-        let colorItem = NSMenuItem(title: "Color", action: nil, keyEquivalent: "")
-        let colorSub = NSMenu()
-        for (i, p) in SOLID_PRESETS.enumerated() {
-            let it = NSMenuItem(title: p.0, action: #selector(setColorPreset(_:)), keyEquivalent: "")
-            it.target = self; it.tag = i; it.state = (r == p.1 && g == p.2 && b == p.3) ? .on : .off
-            colorSub.addItem(it)
-        }
-        colorItem.submenu = colorSub; menu.addItem(colorItem)
-
-        let brItem = NSMenuItem(title: "Brightness", action: nil, keyEquivalent: "")
-        let brSub = NSMenu()
-        for pct in [20, 40, 60, 80, 100] {
-            let it = NSMenuItem(title: "\(pct)%", action: #selector(setBrightness(_:)), keyEquivalent: "")
-            it.target = self; it.tag = pct
-            it.state = (Int((Settings.shared.brightness*100).rounded()) == pct) ? .on : .off
-            brSub.addItem(it)
-        }
-        brItem.submenu = brSub; menu.addItem(brItem)
-
-        let ordItem = NSMenuItem(title: "Color order", action: nil, keyEquivalent: "")
-        let ordSub = NSMenu()
-        for o in ["GRB", "RGB"] {
-            let it = NSMenuItem(title: o, action: #selector(setOrder(_:)), keyEquivalent: "")
-            it.target = self; it.representedObject = o; it.state = ((o == "GRB") == grb) ? .on : .off
-            ordSub.addItem(it)
-        }
-        ordItem.submenu = ordSub; menu.addItem(ordItem)
-
-        if displays.count > 1 {
-            let dItem = NSMenuItem(title: "Display", action: nil, keyEquivalent: "")
-            let dSub = NSMenu()
-            for (i, d) in displays.enumerated() {
-                let it = NSMenuItem(title: "Display \(i+1) — \(d.width)×\(d.height)", action: #selector(setDisplay(_:)), keyEquivalent: "")
-                it.target = self; it.tag = i; it.state = (i == Settings.shared.displayIndex) ? .on : .off
-                dSub.addItem(it)
-            }
-            dItem.submenu = dSub; menu.addItem(dItem)
-        }
-        menu.addItem(.separator())
-
-        let login = NSMenuItem(title: "Launch at Login", action: #selector(toggleLogin), keyEquivalent: "")
-        login.target = self; login.state = (SMAppService.mainApp.status == .enabled) ? .on : .off
-        menu.addItem(login)
-        let quit = NSMenuItem(title: "Quit Lumicast", action: #selector(quitApp), keyEquivalent: "q")
-        quit.target = self; menu.addItem(quit)
-    }
-
     // ---- actions ----
-    @objc func setMode(_ s: NSMenuItem) {
-        let m = (s.representedObject as? String) ?? "off"
-        Settings.shared.mode = m
-        if m == "mirror" { ensureCapture() }
-    }
-    @objc func setColorPreset(_ s: NSMenuItem) {
-        let p = SOLID_PRESETS[s.tag]
-        Settings.shared.solidColor = (p.1, p.2, p.3); Settings.shared.mode = "solid"
-    }
-    @objc func setEffect(_ s: NSMenuItem) { Settings.shared.fxIndex = s.tag; Settings.shared.mode = "fx" }
-    @objc func setSpeed(_ s: NSMenuItem) { Settings.shared.fxSpeed = (s.representedObject as? Double) ?? 0.5 }
-    @objc func setBrightness(_ s: NSMenuItem) { Settings.shared.brightness = Double(s.tag)/100.0 }
-    @objc func setOrder(_ s: NSMenuItem) { Settings.shared.grb = ((s.representedObject as? String) == "GRB") }
-    @objc func enableScreen() { requestScreenAccess() }
-    @objc func setDisplay(_ s: NSMenuItem) { selectDisplay(s.tag) }
-    @objc func toggleLogin() {
-        do { if SMAppService.mainApp.status == .enabled { try SMAppService.mainApp.unregister() }
-             else { try SMAppService.mainApp.register() } } catch { NSLog("login: \(error)") }
-    }
     @objc func quitApp() { Settings.shared.mode = "off"; engine.sendBlackSync(); serial.closePort(); NSApp.terminate(nil) }
 
     // ---- capture ----
