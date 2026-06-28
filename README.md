@@ -11,8 +11,6 @@ reads your screen and writes colors to the strip.
 
 ![Lumicast Rainbow effect on the LED ring](docs/demo.gif)
 
-![Effects mode showing rainbow preview](docs/screenshot-effects.png) ![Solid mode showing blue](docs/screenshot-solid.png) ![Mirror mode](docs/screenshot-mirror.png)
-
 ## Why
 
 The LED kit this was built for ships with a closed‑source app that phones home (activation, update
@@ -27,6 +25,16 @@ code. You get your lights back, privately, in ~800 lines of Swift you can read.
 - **Mirror** — the strip follows your screen's edge colors (needs Screen Recording).
 - Brightness, color order (RGB/GRB), display picker, launch‑at‑login.
 - A live preview of all the LEDs in the menu‑bar panel.
+
+## Screenshots
+
+<table>
+  <tr valign="top">
+    <td align="center"><img src="docs/screenshot-effects.png" alt="Effects mode" width="250"><br><sub>Effects</sub></td>
+    <td align="center"><img src="docs/screenshot-solid.png" alt="Solid color mode" width="250"><br><sub>Solid color</sub></td>
+    <td align="center"><img src="docs/screenshot-mirror.png" alt="Mirror mode" width="250"><br><sub>Mirror</sub></td>
+  </tr>
+</table>
 
 ## Hardware / protocol
 
