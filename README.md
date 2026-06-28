@@ -9,6 +9,8 @@ reads your screen and writes colors to the strip.
 > **Not affiliated with SkyDimo or any vendor.** "SkyDimo" and other names are trademarks of their
 > respective owners.
 
+![Lumicast Rainbow effect on the LED ring](docs/demo.gif)
+
 ![Effects mode showing rainbow preview](docs/screenshot-effects.png) ![Solid mode showing blue](docs/screenshot-solid.png) ![Mirror mode](docs/screenshot-mirror.png)
 
 ## Why
