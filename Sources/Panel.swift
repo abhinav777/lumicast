@@ -1,12 +1,11 @@
-// SwiftUI control panel hosted in a key NSPanel (replaces the plain NSMenu).
-// The engine/Settings are untouched — this is purely the UI shell.
+// The SwiftUI control panel, hosted in a borderless key window under the menu-bar icon.
+// Purely the UI shell: it edits Settings and tells the app when the mode changes.
 
 import AppKit
 import SwiftUI
 import ServiceManagement
-import CoreGraphics
 
-// A borderless panel that CAN become key, so SwiftUI controls receive clicks.
+// A borderless window that CAN become key, so SwiftUI controls receive clicks.
 final class PanelWindow: NSWindow {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
@@ -24,50 +23,63 @@ final class PanelModel: ObservableObject {
     @Published var b: Double = 0
     @Published var displayNames: [String] = []
     @Published var displayIndex: Int = 0
-    @Published var captureGranted: Bool = false
+    @Published var mirror: MirrorState = .needsPermission
     @Published var portOpen: Bool = false
     @Published var loginEnabled: Bool = false
     @Published var preview: [UInt8] = []
     var leds: [LedPt] = []
-    private var lastMode = "solid"
     weak var app: AppDelegate?
     private var timer: Timer?
 
     func start() {
-        mode = Settings.shared.mode
-        brightness = Settings.shared.brightness
-        grb = Settings.shared.grb
-        fxIndex = Settings.shared.fxIndex
-        fxSpeed = Settings.shared.fxSpeed
-        let (rr, gg, bb) = Settings.shared.solidColor
+        stop()
+        let s = Settings.shared
+        mode = s.mode
+        brightness = s.brightness
+        grb = s.grb
+        fxIndex = s.fxIndex
+        fxSpeed = s.fxSpeed
+        let (rr, gg, bb) = s.solidColor
         r = Double(rr); g = Double(gg); b = Double(bb)
-        displayIndex = Settings.shared.displayIndex
-        captureGranted = CGPreflightScreenCaptureAccess()
+        displayIndex = s.displayIndex
         loginEnabled = (SMAppService.mainApp.status == .enabled)
-        if let a = app {
-            leds = a.engine.leds
-            displayNames = a.displays.enumerated().map { "Display \($0.offset + 1) — \($0.element.width)×\($0.element.height)" }
-        }
-        let t = Timer(timeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in
-            guard let self, let a = self.app else { return }
-            self.preview = a.engine.snapshotPreview()
-            self.portOpen = a.serial.isOpen
-        }
+        if let a = app { leds = a.engine.leds }
+        refresh()
+        let t = Timer(timeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(t, forMode: .common); timer = t
     }
     func stop() { timer?.invalidate(); timer = nil }
 
-    func setMode(_ m: String) {
-        if m != "off" { lastMode = m }
-        mode = m; Settings.shared.mode = m
-        if m == "mirror" { app?.ensureCapture(); captureGranted = CGPreflightScreenCaptureAccess() }
+    // Pull live state from the engine. Only publishes what actually changed, so a static
+    // strip doesn't redraw the panel 20 times a second.
+    private func refresh() {
+        guard let a = app else { return }
+        let s = a.engine.snapshot()
+        if preview != s.preview { preview = s.preview }
+        if portOpen != s.portOpen { portOpen = s.portOpen }
+        let ms = a.mirrorState
+        if mirror != ms { mirror = ms }
+        if displayNames.count != a.displays.count {
+            displayNames = a.displays.enumerated().map { "Display \($0.offset + 1) — \($0.element.width)×\($0.element.height)" }
+        }
     }
-    func togglePower() { mode == "off" ? setMode(lastMode) : setMode("off") }
-    func setEffect(_ i: Int) { fxIndex = i; mode = "fx"; Settings.shared.fxIndex = i; Settings.shared.mode = "fx" }
+
+    /// Every mode change goes through here, so the power button's memory and screen capture
+    /// always follow along.
+    func setMode(_ m: String) {
+        if m != "off" { Settings.shared.lastMode = m }
+        mode = m; Settings.shared.mode = m
+        app?.modeChanged()
+    }
+    func togglePower() { setMode(mode == "off" ? Settings.shared.lastMode : "off") }
+    func setEffect(_ i: Int) {
+        fxIndex = i; Settings.shared.fxIndex = i
+        if mode != "fx" { setMode("fx") }
+    }
     func setSpeed(_ s: Double) { fxSpeed = s; Settings.shared.fxSpeed = s }
     func setPreset(_ p: (String, Int, Int, Int)) {
         r = Double(p.1); g = Double(p.2); b = Double(p.3); commit()
-        mode = "solid"; Settings.shared.mode = "solid"
+        if mode != "solid" { setMode("solid") }
     }
     func commit() { Settings.shared.solidColor = (Int(r), Int(g), Int(b)) }
     func setBrightness(_ v: Double) { brightness = v; Settings.shared.brightness = v }
@@ -114,7 +126,7 @@ struct ControlPanel: View {
             Spacer()
             Text(status).font(.system(size: 11)).foregroundStyle(.secondary)
             Button { m.togglePower() } label: {
-                Image(systemName: m.mode == "off" ? "power" : "power")
+                Image(systemName: "power")
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(m.mode == "off" ? Color.secondary : Color.accentColor)
             }
@@ -127,7 +139,13 @@ struct ControlPanel: View {
         switch m.mode {
         case "solid": return "Solid · \(Int(m.r)),\(Int(m.g)),\(Int(m.b))"
         case "fx": return EFFECTS[min(m.fxIndex, EFFECTS.count - 1)]
-        case "mirror": return m.captureGranted ? "Mirroring" : "needs permission"
+        case "mirror":
+            switch m.mirror {
+            case .live: return "Mirroring"
+            case .starting: return "Starting…"
+            case .stopped: return "Mirror paused"
+            case .needsPermission: return "needs permission"
+            }
         default: return "Off"
         }
     }
@@ -164,26 +182,36 @@ struct ControlPanel: View {
             }
         case "mirror":
             VStack(alignment: .leading, spacing: 8) {
-                if !m.captureGranted {
-                    Text("Mirror needs Screen Recording.").font(.system(size: 11)).foregroundStyle(.secondary)
+                switch m.mirror {
+                case .needsPermission:
+                    note("Mirror needs Screen Recording.")
                     Button("Enable screen recording…") { m.enableScreen() }.font(.system(size: 12))
-                } else if m.displayNames.count > 1 {
-                    ForEach(Array(m.displayNames.enumerated()), id: \.offset) { i, name in
-                        Button { m.pickDisplay(i) } label: {
-                            HStack {
-                                Text(name).font(.system(size: 11))
-                                Spacer()
-                                if i == m.displayIndex { Image(systemName: "checkmark").font(.system(size: 10)) }
-                            }.frame(maxWidth: .infinity).contentShape(Rectangle())
-                        }.buttonStyle(.plain)
+                case .stopped:
+                    note("Screen sharing was stopped from the menu bar.")
+                    Button("Resume mirroring") { m.setMode("mirror") }.font(.system(size: 12))
+                case .starting, .live:
+                    if m.displayNames.count > 1 {
+                        ForEach(Array(m.displayNames.enumerated()), id: \.offset) { i, name in
+                            Button { m.pickDisplay(i) } label: {
+                                HStack {
+                                    Text(name).font(.system(size: 11))
+                                    Spacer()
+                                    if i == m.displayIndex { Image(systemName: "checkmark").font(.system(size: 10)) }
+                                }.frame(maxWidth: .infinity).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                    } else {
+                        note(m.mirror == .live ? "Mirroring your screen." : "Starting screen capture…")
                     }
-                } else {
-                    Text("Mirroring your screen.").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }.frame(maxWidth: .infinity, alignment: .leading)
         default:
             EmptyView()
         }
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 11)).foregroundStyle(.secondary)
     }
 
     private func tileGrid(_ items: [(String, Int)], selected: @escaping (Int) -> Bool, action: @escaping (Int) -> Void) -> some View {
@@ -250,20 +278,18 @@ struct LedPreviewView: View {
         Canvas { ctx, size in
             let full = CGRect(origin: .zero, size: size)
             ctx.fill(Path(roundedRect: full, cornerRadius: 10), with: .color(Color(white: 0.07)))
-            // Size the LED ring to the grid's aspect (30:16) and center it, so horizontal and
-            // vertical dot spacing match (uniform border) regardless of the preview's proportions.
+            // Size the LED ring to the layout's aspect and center it, so horizontal and vertical
+            // dot spacing match (uniform border) regardless of the preview's proportions.
             let avail = full.insetBy(dx: 16, dy: 14)
-            let aspect = CGFloat(GRID_W - 1) / CGFloat(GRID_H - 1)
+            let aspect = CGFloat(layoutAspect())
             var fw = avail.width, fh = avail.width / aspect
             if fh > avail.height { fh = avail.height; fw = avail.height * aspect }
             let frame = CGRect(x: avail.midX - fw / 2, y: avail.midY - fh / 2, width: fw, height: fh)
             ctx.fill(Path(roundedRect: frame.insetBy(dx: 9, dy: 9), cornerRadius: 6), with: .color(Color(white: 0.14)))
             guard !leds.isEmpty, colors.count >= leds.count * 3 else { return }
             for (i, p) in leds.enumerated() {
-                let u = GRID_W > 1 ? p.x / Double(GRID_W - 1) : 0
-                let v = GRID_H > 1 ? p.y / Double(GRID_H - 1) : 0
-                let cx = frame.minX + CGFloat(u) * frame.width
-                let cy = frame.minY + CGFloat(v) * frame.height
+                let cx = frame.minX + CGFloat(p.x) * frame.width
+                let cy = frame.minY + CGFloat(p.y) * frame.height
                 let col = Color(red: Double(colors[i*3]) / 255, green: Double(colors[i*3+1]) / 255, blue: Double(colors[i*3+2]) / 255)
                 ctx.fill(Path(roundedRect: CGRect(x: cx - 2, y: cy - 2, width: 4, height: 4), cornerRadius: 1), with: .color(col))
             }
