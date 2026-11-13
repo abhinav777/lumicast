@@ -1,0 +1,117 @@
+name: CI
+
+# Every push and pull request: run the tests and build the universal app.
+# Pushing a tag like v1.2.3 additionally publishes a GitHub release with the tested zip,
+# using that version's section of CHANGELOG.md as the release notes.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test and build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          swiftc --version
+
+      - name: Logic + wire tests
+        run: tests/run.sh
+
+      - name: Build universal app
+        run: ./build.sh
+
+      - name: Binary is universal and matches Info.plist's minimum macOS
+        run: |
+          BIN=Lumicast.app/Contents/MacOS/Lumicast
+          MIN_OS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Info.plist)"
+          lipo -archs "$BIN"
+          lipo "$BIN" -verify_arch arm64 x86_64
+          otool -l "$BIN" | grep minos
+          if otool -l "$BIN" | awk '/minos/{print $2}' | grep -qv "^${MIN_OS}$"; then
+            echo "::error::binary minimum OS does not match Info.plist ($MIN_OS)"; exit 1
+          fi
+          codesign --verify --deep --strict Lumicast.app
+
+      - name: App lights up, then goes dark when terminated
+        run: python3 tests/quit_test.py Lumicast.app
+
+      - name: Package
+        run: |
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
+          ditto -c -k --keepParent Lumicast.app "Lumicast-$VERSION.zip"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lumicast-${{ env.VERSION }}
+          path: Lumicast-${{ env.VERSION }}.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag must match the app version
+        run: |
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Info.plist version $VERSION"; exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: Lumicast-${{ env.VERSION }}
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v tag="$GITHUB_REF_NAME" '
+            $0 ~ "^## " tag "([ \t]|$)" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if ! grep -q '[^[:space:]]' notes.md; then
+            echo "::error::no section for $GITHUB_REF_NAME in CHANGELOG.md"; exit 1
+          fi
+          cat >> notes.md <<EOF
+
+          ### Install
+          Download \`Lumicast-$VERSION.zip\` below and unzip it. The app is ad-hoc signed, not
+          notarized, so macOS quarantines it; clear that once, then open:
+          \`\`\`sh
+          xattr -dr com.apple.quarantine Lumicast.app
+          open Lumicast.app
+          \`\`\`
+          Universal (Apple silicon + Intel), macOS 13 or later. Or build from source: \`./build.sh\`.
+          EOF
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ZIP="Lumicast-$VERSION.zip"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$ZIP" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$ZIP" --verify-tag \
+              --title "Lumicast $GITHUB_REF_NAME" --notes-file notes.md
+          fi
